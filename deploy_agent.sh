@@ -4,7 +4,8 @@ secript_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 templates_directory="$secript_directory/templates"
 cd "$secript_directory" || exit 1
 
-CREATED_DIR="" 
+CREATED_DIR=""   
+
 
 handle_interrupt() {
     trap - INT TSTP
@@ -21,10 +22,21 @@ handle_interrupt() {
             echo "Could not create the zip. Leaving $CREATED_DIR in place."
         fi
     else
-        echo "archive directory not found"
+        echo "Nothing had been created yet, so there is nothing to archive."
     fi
     echo "Closing the session cleanly. Goodbye."
     exit 130
+}
+
+
+abort_deploy() {
+    echo "Error: $1" >&2
+    trap - INT TSTP
+    if [ -n "$CREATED_DIR" ] && [ -d "$CREATED_DIR" ]; then
+        rm -rf "$CREATED_DIR"
+        echo "Removed the incomplete directory $CREATED_DIR." >&2
+    fi
+    CREATED_DIR=""
 }
 
 
@@ -48,7 +60,7 @@ sync_total_sessions() {
     local cfg="$dir/Helpers/config.json"
     local prior
     prior=$(awk -F, 'NR>1 { s=$3+$4; if (s>m) m=s } END { print m+0 }' "$roster")
-    sed -i.bak -E "s/(\"total_sessions\":[[:space:]]*)[0-9]+/\1$((prior + 1))/" "$cfg"
+    sed -i.bak -E "s/(\"total_sessions\":[[:space:]]*)[0-9]+/\1$((prior + 1))/" "$cfg" || return 1
     rm -f "${cfg}.bak"
 }
 
@@ -58,7 +70,10 @@ run_app_in() {
         echo "Error: $dir does not exist. Deploy first." >&2
         return 1
     fi
-    sync_total_sessions "$dir"
+    if ! sync_total_sessions "$dir"; then
+        echo "Error: could not update total_sessions in $dir/Helpers/config.json" >&2
+        return 1
+    fi
     echo "Starting the Attendance Tracker in $dir ..."
     ( cd "$dir" && python3 attendance_checker.py )
 }
@@ -69,32 +84,39 @@ run_feature() {
 }
 
 deploy_feature() {
+    # 1. Pre-flight checks
     local missing=0
-    for tool in python3 zip; do
-        if ! command -v "$tool" >/dev/null 2>&1; then
-            echo "Error: '$tool' is not installed. Please install it and try again." >&2
-            missing=1
-        fi
-    done
+    if command -v python3 >/dev/null 2>&1 && python3 --version >/dev/null 2>&1; then
+        echo "Found $(python3 --version 2>&1)"
+    else
+        echo "Error: python3 is not installed or does not work." >&2
+        missing=1
+    fi
+    if ! command -v zip >/dev/null 2>&1; then
+        echo "Error: 'zip' is not installed. Please install it and try again." >&2
+        missing=1
+    fi
     [ "$missing" -eq 1 ] && return 1
 
     for f in attendance_checker.py assets.csv config.json; do
         if [ ! -f "$templates_directory/$f" ]; then
-            echo "Error: templates_directory/$f not found." >&2
+            echo "Error: templates/$f not found." >&2
             return 1
         fi
     done
 
-    
     trap handle_interrupt INT TSTP
-
 
     check_project_name || { trap - INT TSTP; return 1; }
 
     if [ -d "$PROJECT_DIR" ]; then
-        read -r -p "$PROJECT_DIR already exists. Overwrite it? (y/N): " ans
+        read -r -p "$PROJECT_DIR already exists. Overwrite it? (y/N): " ans || handle_interrupt
         if [[ "$ans" =~ ^[Yy]$ ]]; then
-            rm -rf "$PROJECT_DIR"
+            rm -rf "$PROJECT_DIR" || {
+                echo "Error: could not remove the old $PROJECT_DIR (permission denied?)." >&2
+                trap - INT TSTP
+                return 1
+            }
         else
             echo "Aborted. Nothing was changed."
             trap - INT TSTP
@@ -103,16 +125,16 @@ deploy_feature() {
     fi
 
     CREATED_DIR="$PROJECT_DIR"
-    mkdir -p "$PROJECT_DIR/Helpers" "$PROJECT_DIR/reports" || {
-        echo "Error: could not create directories." >&2
-        trap - INT TSTP
+    if ! mkdir -p "$PROJECT_DIR/Helpers" "$PROJECT_DIR/reports"; then
+        abort_deploy "could not create the directories (permission denied?)."
         return 1
-    }
+    fi
     echo "Created $PROJECT_DIR/, Helpers/ and reports/."
 
-    # 3. Populate files
-    cp "$templates_directory/attendance_checker.py" "$PROJECT_DIR/attendance_checker.py"
-    cp "$templates_directory/config.json" "$PROJECT_DIR/Helpers/config.json"
+    cp "$templates_directory/attendance_checker.py" "$PROJECT_DIR/attendance_checker.py" \
+        || { abort_deploy "could not copy attendance_checker.py."; return 1; }
+    cp "$templates_directory/config.json" "$PROJECT_DIR/Helpers/config.json" \
+        || { abort_deploy "could not copy config.json."; return 1; }
 
     local roster="$PROJECT_DIR/Helpers/assets.csv"
     local template_rows
@@ -135,7 +157,8 @@ deploy_feature() {
             if is_number "$n" && [ "$n" -ge 1 ] && [ "$n" -le "$template_rows" ]; then break; fi
             echo "Enter a number between 1 and $template_rows."
         done
-        head -n $((n + 1)) "$templates_directory/assets.csv" > "$roster"
+        head -n $((n + 1)) "$templates_directory/assets.csv" > "$roster" \
+            || { abort_deploy "could not write the roster file."; return 1; }
         echo "Copied $n students from the template (total_sessions stays 5)."
     else
         local names=("Amina Yusuf" "Brian Okello" "Chloe Uwase" "David Mugisha" "Eva Ingabire"
@@ -150,44 +173,45 @@ deploy_feature() {
             if is_number "$n" && [ "$n" -ge 1 ] && [ "$n" -le "$max" ]; then break; fi
             echo "Enter a number between 1 and $max."
         done
-        echo "Email,Names,Attendance Count,Absence Count" > "$roster"
+        echo "Email,Names,Attendance Count,Absence Count" > "$roster" \
+            || { abort_deploy "could not write the roster file."; return 1; }
         local i
         for ((i = 0; i < n; i++)); do
             echo "${emails[$i]}@example.com,${names[$i]},0,0" >> "$roster"
         done
-        
-        sed -i.bak -E 's/("total_sessions":[[:space:]]*)[0-9]+/\11/' "$PROJECT_DIR/Helpers/config.json"
+        sed -i.bak -E 's/("total_sessions":[[:space:]]*)[0-9]+/\11/' "$PROJECT_DIR/Helpers/config.json" \
+            || { abort_deploy "could not update total_sessions."; return 1; }
         rm -f "$PROJECT_DIR/Helpers/config.json.bak"
         echo "Generated $n students (total_sessions set to 1)."
     fi
 
-    chmod +x "$PROJECT_DIR/attendance_checker.py"
-    chmod 600 "$PROJECT_DIR/Helpers/config.json"
+    chmod +x "$PROJECT_DIR/attendance_checker.py" \
+        || { abort_deploy "could not make attendance_checker.py executable."; return 1; }
+    chmod 600 "$PROJECT_DIR/Helpers/config.json" \
+        || { abort_deploy "could not restrict config.json permissions."; return 1; }
     echo
     echo "Permissions set:"
     ls -l "$PROJECT_DIR/attendance_checker.py" "$PROJECT_DIR/Helpers/config.json" | awk '{print "  " $1 "  " $NF}'
 
     echo
-    read -r -p "Update the attendance alert thresholds? (y/N): " upd
+    read -r -p "Update the attendance alert thresholds? (y/N): " upd || handle_interrupt
     if [[ "$upd" =~ ^[Yy]$ ]]; then
         local w f
         while true; do
             read -r -p "Warning threshold [default 75]: " w || handle_interrupt
             w=${w:-75}
-            if is_number "$w" && [ "$w" -le 100 ]; then break; fi
-            echo "Enter a whole number from 0 to 100."
+            if is_number "$w" && [ "$w" -ge 1 ] && [ "$w" -le 100 ]; then break; fi
+            echo "Enter a whole number from 1 to 100."
         done
         while true; do
             read -r -p "Failure threshold [default 50]: " f || handle_interrupt
             f=${f:-50}
-            if is_number "$f" && [ "$f" -le 100 ]; then break; fi
-            echo "Enter a whole number from 0 to 100."
+            if is_number "$f" && [ "$f" -le 100 ] && [ "$f" -lt "$w" ]; then break; fi
+            echo "Enter a whole number that is lower than the warning threshold ($w)."
         done
-        if [ "$f" -ge "$w" ]; then
-            echo "Warning: failure ($f) is not lower than warning ($w). Applying anyway."
-        fi
         local cfg="$PROJECT_DIR/Helpers/config.json"
-        sed -i.bak -E "s/(\"warning\":[[:space:]]*)[0-9]+/\1${w}/; s/(\"failure\":[[:space:]]*)[0-9]+/\1${f}/" "$cfg"
+        sed -i.bak -E "s/(\"warning\":[[:space:]]*)[0-9]+/\1${w}/; s/(\"failure\":[[:space:]]*)[0-9]+/\1${f}/" "$cfg" \
+            || { abort_deploy "could not update the thresholds."; return 1; }
         rm -f "${cfg}.bak"
         echo "Thresholds updated: warning=$w, failure=$f"
     else
@@ -196,7 +220,7 @@ deploy_feature() {
 
     trap - INT TSTP
     CREATED_DIR=""
-
+    
     echo
     echo "Deployment complete. Verifying by starting the application..."
     run_app_in "$PROJECT_DIR"
@@ -214,27 +238,41 @@ archive_feature() {
     ts=$(date +%Y%m%d_%H%M%S)
     local archived=0
 
-    mkdir -p "$PROJECT_DIR/archives/attendance" "$PROJECT_DIR/archives/absent"
+    if ! mkdir -p "$PROJECT_DIR/archives/attendance" "$PROJECT_DIR/archives/absent"; then
+        echo "Error: could not create the archives directories." >&2
+        return 1
+    fi
 
     local att="$PROJECT_DIR/reports/attendance.log"
     local abs="$PROJECT_DIR/reports/absent.log"
 
     if [ -f "$att" ]; then
         local dest="$PROJECT_DIR/archives/attendance/attendance_${ts}.log"
-        mv "$att" "$dest" && echo "Archived: $dest" && archived=$((archived + 1))
+        if mv "$att" "$dest"; then
+            echo "Archived: $dest"
+            archived=$((archived + 1))
+        else
+            echo "Error: could not archive attendance.log." >&2
+        fi
     else
         echo "No attendance.log found (nothing to archive)."
     fi
 
     if [ -f "$abs" ]; then
         local dest="$PROJECT_DIR/archives/absent/absent_${ts}.log"
-        mv "$abs" "$dest" && echo "Archived: $dest" && archived=$((archived + 1))
+        if mv "$abs" "$dest"; then
+            echo "Archived: $dest"
+            archived=$((archived + 1))
+        else
+            echo "Error: could not archive absent.log." >&2
+        fi
     else
         echo "No absent.log found (nobody absent, or the app has not run yet)."
     fi
 
     echo "Done. $archived log file(s) archived."
 }
+
 
 show_menu() {
     echo "========================================"
@@ -254,7 +292,7 @@ esac
 
 while true; do
     show_menu
-    read -r -p "Choose an option (1-4): " opt
+    read -r -p "Choose an option (1-4): " opt || { echo; echo "Goodbye."; exit 0; }
     case "$opt" in
         1) deploy_feature ;;
         2) run_feature ;;
