@@ -13,6 +13,8 @@ deploy_agent_GithubUsername/
     ├── assets.csv
     └── config.json
 ```
+That is the video link ::
+https://drive.google.com/file/d/1CBffya1c5s7B8MbbNe6kbLZEsIeTnMRg/view?usp=sharing
 
 The three files in `templates/` are the original files and are copied as they are.
 How to download the script
@@ -132,4 +134,3 @@ You should see the zip file and no `attendance_tracker_test/` folder. The zip co
 ## How the deployment was tested
 
 After a deploy, I checked the structure with `ls -R attendance_tracker_{name}` and checked the permissions with `ls -l`. I opened `Helpers/config.json` to confirm the thresholds changed and `total_sessions` matched the roster. Then I ran the app twice and checked that nobody goes above 100%. I tested bad input too: letters instead of numbers, an empty project name, and a failure threshold higher than the warning threshold. I also tested an existing project name, answering both yes and no to the overwrite question.
-That is the video link https://drive.google.com/file/d/1CBffya1c5s7B8MbbNe6kbLZEsIeTnMRg/view?usp=sharing
