@@ -1,8 +1,8 @@
 #!/bin/bash
 
-secript_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-templates_directory="$secript_directory/templates"
-cd "$secript_directory" || exit 1
+script_directory="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+templates_directory="$script_directory/templates"
+cd "$script_directory" || exit 1
 
 CREATED_DIR=""   
 
@@ -15,7 +15,7 @@ handle_interrupt() {
         local zipname="${CREATED_DIR}_archive.zip"
         echo "Archiving the incomplete project into $zipname ..."
         if zip -r -q "$zipname" "$CREATED_DIR"; then
-            echo "Archive created: $secript_directory/$zipname"
+            echo "Archive created: $script_directory/$zipname"
             rm -rf "$CREATED_DIR"
             echo "Incomplete directory $CREATED_DIR removed."
         else
