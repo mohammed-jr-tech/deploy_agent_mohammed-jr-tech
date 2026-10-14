@@ -15,6 +15,25 @@ deploy_agent_GithubUsername/
 ```
 
 The three files in `templates/` are the original files and are copied as they are.
+How to download the script
+
+You need git, python3 and zip on your computer (Linux, macOS, or WSL on Windows).
+
+Option 1: clone the repository This downloads everything, including the templates/ folder the script needs:
+
+bash
+```
+git clone https://github.com/mohammed-jr-tech/deploy_agent_mohammed-jr-tech.git
+cd deploy_agent_mohammed-jr-tech
+```
+Option 2: download a zip from GitHub. Open the repository page, click the green Code button, then click Download ZIP. Unzip it and open the folder in your terminal:
+
+bash
+```
+unzip deploy_agent_mohammed-jr-tech-main.zip
+cd deploy_agent_mohammed-jr-tech-main
+```
+Do not download only deploy_agent.sh by itself. The script reads the three source files from templates/, and it stops with an error if they are missing. Keep deploy_agent.sh and templates/ in the same folder.
 
 ## How to run it
 
